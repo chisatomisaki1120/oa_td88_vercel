@@ -1,0 +1,232 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  EMPLOYEE
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  EARLY_LEAVE
+  ABSENT
+  INCOMPLETE
+  OFF
+}
+
+enum BreakType {
+  WC
+  SMOKE
+  MEAL
+  OTHER
+}
+
+enum WorkMode {
+  ONLINE
+  OFFLINE
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                String                  @id @default(cuid())
+  username          String                  @unique
+  passwordHash      String
+  fullName          String
+  email             String?
+  phone             String?
+  address           String?
+  department        String?
+  workStartTime     String?
+  workEndTime       String?
+  lateGraceMinutes  Int                     @default(5)
+  earlyLeaveGraceMinutes Int                @default(5)
+  breakPolicyJson   String                  @default("{\"wc\":{\"maxCount\":3,\"maxMinutesEach\":10},\"smoke\":{\"maxCount\":2,\"maxMinutesEach\":10},\"meal\":{\"maxCount\":2,\"maxMinutesEach\":40}}")
+  workMode          WorkMode                @default(OFFLINE)
+  allowedOffDaysPerMonth Int                @default(2)
+  annualLeaveQuota  Int                     @default(15)
+  role              Role                    @default(EMPLOYEE)
+  isActive          Boolean                 @default(true)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  deletedAt         DateTime?
+  attendanceDays    AttendanceDay[]
+  shiftAssignments  EmployeeShiftAssignment[]
+  authSessions      AuthSession[]
+  loginAccessLogs   LoginAccessLog[]
+  auditLogs         AuditLog[]
+  leaveRequests     LeaveRequest[]          @relation("LeaveRequester")
+  reviewedLeaves    LeaveRequest[]          @relation("LeaveReviewer")
+
+  @@index([isActive, deletedAt])
+  @@index([deletedAt, role])
+}
+
+model Shift {
+  id                 String                  @id @default(cuid())
+  name               String
+  startTime          String
+  endTime            String
+  lateGraceMinutes   Int                     @default(5)
+  earlyLeaveGraceMinutes Int                 @default(5)
+  breakPolicyJson    String
+  isActive           Boolean                 @default(true)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  assignments        EmployeeShiftAssignment[]
+}
+
+model EmployeeShiftAssignment {
+  id            String   @id @default(cuid())
+  userId        String
+  shiftId       String
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shift         Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@index([userId, effectiveFrom])
+}
+
+model AttendanceDay {
+  id                String            @id @default(cuid())
+  userId            String
+  workDate          String
+  checkInAt         DateTime?
+  checkOutAt        DateTime?
+  status            AttendanceStatus  @default(INCOMPLETE)
+  warningFlagsJson  String            @default("[]")
+  workedMinutes     Int?
+  isOffDay          Boolean           @default(false)
+  offReason         String?
+  isDeducted        Boolean           @default(false)
+  createdBy         String?
+  updatedBy         String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  breakSessions     BreakSession[]
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@index([workDate, status])
+}
+
+model BreakSession {
+  id                     String    @id @default(cuid())
+  attendanceDayId        String
+  breakType              BreakType
+  startAt                DateTime
+  endAt                  DateTime?
+  durationMinutesComputed Int?
+  createdAt              DateTime  @default(now())
+
+  attendanceDay          AttendanceDay @relation(fields: [attendanceDayId], references: [id], onDelete: Cascade)
+
+  @@index([attendanceDayId, startAt])
+  @@index([attendanceDayId, endAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorUserId String?
+  action     String
+  entityType String
+  entityId   String
+  beforeJson String?
+  afterJson  String?
+  createdAt  DateTime @default(now())
+
+  actor      User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model AuthSession {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  ipAddress  String
+  userAgent  String?
+  deviceKey  String
+  isSharedIp Boolean  @default(false)
+  isSharedDevice Boolean @default(false)
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt, lastSeenAt])
+  @@index([deviceKey])
+  @@index([ipAddress])
+  @@index([expiresAt])
+}
+
+model LoginAccessLog {
+  id             String   @id @default(cuid())
+  userId         String?
+  usernameInput  String
+  ipAddress      String
+  userAgent      String?
+  deviceKey      String
+  success        Boolean
+  blockedReason  String?
+  failedReason   String?
+  isSharedIp     Boolean  @default(false)
+  isSharedDevice Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([ipAddress, usernameInput, success, createdAt])
+  @@index([success, deviceKey, userId])
+  @@index([success, ipAddress, userId, createdAt])
+}
+
+model LeaveRequest {
+  id              String             @id @default(cuid())
+  userId          String
+  year            Int
+  dates           String
+  reason          String?
+  status          LeaveRequestStatus @default(PENDING)
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  rejectedReason  String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  user            User               @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer        User?              @relation("LeaveReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([userId, year])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model LoginSecurityConfig {
+  id                              Int      @id
+  enforceSingleDevicePerAccount   Boolean  @default(true)
+  enforceSingleAccountPerDeviceIp Boolean  @default(true)
+  blockMobilePhoneLogin           Boolean  @default(true)
+  updatedAt                       DateTime @updatedAt
+}
+

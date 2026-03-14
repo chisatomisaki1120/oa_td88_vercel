@@ -1,0 +1,16 @@
+.git
+.gitignore
+.next
+node_modules
+backups
+prisma/dev.db
+*.db
+*.db-journal
+*-wal
+*-shm
+db-export-*.json
+*.tsbuildinfo
+.env
+.env.local
+.env.development.local
+.env.production.local
