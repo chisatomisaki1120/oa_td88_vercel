@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { Role } from "@prisma/client";
 import { fail } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { parseWarnings } from "@/lib/attendance";
 
@@ -37,22 +38,30 @@ export async function GET(request: NextRequest) {
       },
       ...(userId ? { userId } : {}),
     },
-    include: {
-      user: { select: { id: true, username: true, fullName: true, department: true, allowedOffDaysPerMonth: true } },
-    },
     orderBy: [{ userId: "asc" }, { workDate: "asc" }],
   });
+
+  const userIds = [...new Set(rows.map((row) => row.userId))];
+  const users = userIds.length
+    ? await prismaSession.user.findMany({
+        where: { id: { in: userIds }, deletedAt: null },
+        select: { id: true, username: true, fullName: true, department: true, allowedOffDaysPerMonth: true },
+      })
+    : [];
+  const userMap = new Map(users.map((u) => [u.id, u]));
 
   const summaryByUser = new Map<string, EmployeeSummary>();
 
   for (const row of rows) {
-    const key = row.user.id;
+    const user = userMap.get(row.userId);
+    if (!user) continue;
+    const key = user.id;
     const current =
       summaryByUser.get(key) ??
       ({
-        employeeName: row.user.username,
-        department: row.user.department ?? "",
-        allowedOffDaysPerMonth: row.user.allowedOffDaysPerMonth,
+        employeeName: user.username,
+        department: user.department ?? "",
+        allowedOffDaysPerMonth: user.allowedOffDaysPerMonth,
         totalDays: 0,
         missedPunchDays: 0,
         lateCount: 0,

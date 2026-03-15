@@ -4,7 +4,10 @@ import { z } from "zod";
 import { fail, ok } from "@/lib/api";
 import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const schema = z.object({
   userId: z.string().min(1),
@@ -17,6 +20,8 @@ export async function POST(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const payload = schema.safeParse(await request.json().catch(() => null));
   if (!payload.success) return fail("Invalid payload", 400, payload.error.flatten());
@@ -30,7 +35,7 @@ export async function POST(request: NextRequest) {
 
   const assignment = await prisma.$transaction(async (tx) => {
     const [userExists, shiftExists] = await Promise.all([
-      tx.user.findUnique({ where: { id: payload.data.userId }, select: { id: true } }),
+      prismaSession.user.findUnique({ where: { id: payload.data.userId }, select: { id: true } }),
       tx.shift.findUnique({ where: { id: payload.data.shiftId }, select: { id: true } }),
     ]);
     if (!userExists) throw new Error("USER_NOT_FOUND");
@@ -46,7 +51,7 @@ export async function POST(request: NextRequest) {
     });
     if (overlapping) throw new Error("OVERLAPPING_ASSIGNMENT");
 
-    return tx.employeeShiftAssignment.create({
+    const created = await tx.employeeShiftAssignment.create({
       data: {
         userId: payload.data.userId,
         shiftId: payload.data.shiftId,
@@ -54,6 +59,8 @@ export async function POST(request: NextRequest) {
         effectiveTo,
       },
     });
+    await enqueueBusinessEvent(tx, "EmployeeShiftAssignment", created.id, "upsert", created as never);
+    return created;
   }).catch((e) => {
     if (e instanceof Error) return e.message;
     throw e;

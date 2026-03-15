@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { Role } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { validateCsrf } from "@/lib/csrf";
-import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 
 // GET /api/admin/sessions - list all active sessions
@@ -10,15 +10,17 @@ export async function GET(request: NextRequest) {
   const user = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!user) return fail("Unauthorized", 401);
 
-  const sessions = await prisma.authSession.findMany({
+  const sessions = await prismaSession.authSession.findMany({
     where: {
       expiresAt: { gt: new Date() },
+      revokedAt: null,
       ...(user.role === Role.SUPER_ADMIN ? {} : { user: { role: { not: Role.SUPER_ADMIN } } }),
     },
     select: {
       id: true,
       ipAddress: true,
       userAgent: true,
+      appInstance: true,
       createdAt: true,
       lastSeenAt: true,
       expiresAt: true,
@@ -40,7 +42,7 @@ export async function DELETE(request: NextRequest) {
   const sessionId = body?.sessionId;
   if (!sessionId || typeof sessionId !== "string") return fail("sessionId is required", 400);
 
-  const session = await prisma.authSession.findUnique({
+  const session = await prismaSession.authSession.findUnique({
     where: { id: sessionId },
     include: { user: { select: { role: true } } },
   });
@@ -50,6 +52,9 @@ export async function DELETE(request: NextRequest) {
     return fail("Admin không được thu hồi phiên của SuperAdmin", 403);
   }
 
-  await prisma.authSession.delete({ where: { id: sessionId } });
-  return ok({ deleted: sessionId });
+  await prismaSession.authSession.update({
+    where: { id: sessionId },
+    data: { revokedAt: new Date(), revokedReason: `ADMIN_REVOKE:${user.id}` },
+  });
+  return ok({ deleted: sessionId, revoked: true });
 }

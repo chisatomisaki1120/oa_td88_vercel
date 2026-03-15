@@ -3,8 +3,11 @@ import { z } from "zod";
 import { fail, ok } from "@/lib/api";
 import { getSessionUserFromRequest } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 const createSchema = z.object({
   dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(15),
@@ -21,14 +24,19 @@ export async function GET(request: NextRequest) {
   const requests = await prisma.leaveRequest.findMany({
     where: { userId: user.id, year },
     orderBy: { createdAt: "desc" },
-    include: { reviewer: { select: { username: true } } },
   });
 
   // Count used annual leave days (approved) this year
   const approved = requests.filter((r) => r.status === "APPROVED");
   const usedDays = approved.reduce((sum, r) => sum + JSON.parse(r.dates).length, 0);
 
-  const me = await prisma.user.findUnique({
+  const reviewerIds = [...new Set(requests.map((r) => r.reviewedBy).filter(Boolean) as string[])];
+  const reviewers = reviewerIds.length
+    ? await prismaSession.user.findMany({ where: { id: { in: reviewerIds } }, select: { id: true, username: true } })
+    : [];
+  const reviewerMap = new Map(reviewers.map((r) => [r.id, r.username]));
+
+  const me = await prismaSession.user.findUnique({
     where: { id: user.id },
     select: { annualLeaveQuota: true },
   });
@@ -37,7 +45,7 @@ export async function GET(request: NextRequest) {
     requests: requests.map((r) => ({
       ...r,
       dates: JSON.parse(r.dates),
-      reviewerName: r.reviewer?.username ?? null,
+      reviewerName: r.reviewedBy ? (reviewerMap.get(r.reviewedBy) ?? null) : null,
     })),
     quota: me?.annualLeaveQuota ?? 15,
     usedDays,
@@ -47,6 +55,8 @@ export async function GET(request: NextRequest) {
 /** Employee: create a new annual leave request */
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -64,7 +74,7 @@ export async function POST(request: NextRequest) {
     return fail("Tất cả ngày phải trong cùng một năm", 400);
   }
 
-  const me = await prisma.user.findUnique({
+  const me = await prismaSession.user.findUnique({
     where: { id: user.id },
     select: { annualLeaveQuota: true },
   });
@@ -94,13 +104,17 @@ export async function POST(request: NextRequest) {
     return fail(`Ngày ${overlap.join(", ")} đã có trong đơn nghỉ phép khác`, 400);
   }
 
-  const leaveRequest = await prisma.leaveRequest.create({
-    data: {
-      userId: user.id,
-      year,
-      dates: JSON.stringify(uniqueDates),
-      reason: payload.data.reason ?? null,
-    },
+  const leaveRequest = await prisma.$transaction(async (tx) => {
+    const created = await tx.leaveRequest.create({
+      data: {
+        userId: user.id,
+        year,
+        dates: JSON.stringify(uniqueDates),
+        reason: payload.data.reason ?? null,
+      },
+    });
+    await enqueueBusinessEvent(tx, "LeaveRequest", created.id, "upsert", created);
+    return created;
   });
 
   return ok({ id: leaveRequest.id, dates: uniqueDates, status: leaveRequest.status });

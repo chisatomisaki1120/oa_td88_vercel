@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { Role } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { parseWarnings } from "@/lib/attendance";
 import { parseHHMM } from "@/lib/time";
@@ -16,16 +17,20 @@ export async function GET(request: NextRequest) {
 
   const rows = await prisma.attendanceDay.findMany({
     where: { workDate: { gte: `${month}-01`, lte: `${month}-31` } },
-    include: {
-      user: {
+    orderBy: [{ userId: "asc" }, { workDate: "asc" }],
+  });
+
+  const userIds = [...new Set(rows.map((row) => row.userId))];
+  const users = userIds.length
+    ? await prismaSession.user.findMany({
+        where: { id: { in: userIds }, deletedAt: null },
         select: {
           id: true, username: true, fullName: true, department: true,
           allowedOffDaysPerMonth: true, workStartTime: true, workEndTime: true,
         },
-      },
-    },
-    orderBy: [{ userId: "asc" }, { workDate: "asc" }],
-  });
+      })
+    : [];
+  const userMap = new Map(users.map((u) => [u.id, u]));
 
   type Summary = {
     userId: string;
@@ -49,7 +54,8 @@ export async function GET(request: NextRequest) {
   const byUser = new Map<string, Summary>();
 
   for (const row of rows) {
-    const u = row.user;
+    const u = userMap.get(row.userId);
+    if (!u) continue;
     if (!byUser.has(u.id)) {
       const startMin = u.workStartTime ? parseHHMM(u.workStartTime) : 480;
       const endMin = u.workEndTime ? parseHHMM(u.workEndTime) : 1020;

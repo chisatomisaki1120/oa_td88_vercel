@@ -1,0 +1,4 @@
+# Example cron for VPS primary
+# Sync every 15 seconds is too frequent for standard cron, so use PM2/systemd loop for near-real-time.
+# This cron example runs every minute:
+* * * * * cd /path/to/oa_td88_vercel && npm run sync:outbox >> logs/sync-outbox.log 2>&1

@@ -4,7 +4,10 @@ import { Role, AttendanceStatus } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { requireRoleRequest } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { validateCsrf } from "@/lib/csrf";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("ALL"),
@@ -27,28 +30,38 @@ export async function GET(request: NextRequest) {
   const requests = await prisma.leaveRequest.findMany({
     where,
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    include: {
-      user: { select: { username: true, fullName: true, department: true, annualLeaveQuota: true } },
-      reviewer: { select: { username: true } },
-    },
   });
 
+  const userIds = [...new Set(requests.flatMap((r) => [r.userId, r.reviewedBy].filter(Boolean) as string[]))];
+  const users = userIds.length
+    ? await prismaSession.user.findMany({
+        where: { id: { in: userIds }, deletedAt: null },
+        select: { id: true, username: true, fullName: true, department: true, annualLeaveQuota: true },
+      })
+    : [];
+  const userMap = new Map(users.map((u) => [u.id, u]));
+
   return ok(
-    requests.map((r) => ({
-      id: r.id,
-      userId: r.userId,
-      username: r.user.username,
-      department: r.user.department,
-      year: r.year,
-      dates: JSON.parse(r.dates),
-      reason: r.reason,
-      status: r.status,
-      reviewerName: r.reviewer?.username ?? null,
-      reviewedAt: r.reviewedAt,
-      rejectedReason: r.rejectedReason,
-      createdAt: r.createdAt,
-      quota: r.user.annualLeaveQuota,
-    })),
+    requests.map((r) => {
+      const user = userMap.get(r.userId);
+      const reviewer = r.reviewedBy ? userMap.get(r.reviewedBy) : null;
+      return {
+        id: r.id,
+        userId: r.userId,
+        username: user?.username ?? "",
+        fullName: user?.fullName ?? "",
+        department: user?.department ?? "",
+        year: r.year,
+        dates: JSON.parse(r.dates),
+        reason: r.reason,
+        status: r.status,
+        reviewerName: reviewer?.username ?? null,
+        reviewedAt: r.reviewedAt,
+        rejectedReason: r.rejectedReason,
+        createdAt: r.createdAt,
+        quota: user?.annualLeaveQuota ?? 0,
+      };
+    }),
   );
 }
 
@@ -60,6 +73,8 @@ const reviewSchema = z.object({
 /** Admin: approve or reject a leave request */
 export async function PUT(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const admin = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!admin) return fail("Unauthorized", 401);
 
@@ -72,12 +87,11 @@ export async function PUT(request: NextRequest) {
   const result = await prisma.$transaction(async (tx) => {
     const lr = await tx.leaveRequest.findUnique({
       where: { id },
-      include: { user: { select: { id: true, allowedOffDaysPerMonth: true } } },
     });
     if (!lr) return "NOT_FOUND" as const;
     if (lr.status !== "PENDING") return "ALREADY_REVIEWED" as const;
 
-    await tx.leaveRequest.update({
+    const reviewed = await tx.leaveRequest.update({
       where: { id },
       data: {
         status: payload.data.action,
@@ -86,6 +100,7 @@ export async function PUT(request: NextRequest) {
         rejectedReason: payload.data.action === "REJECTED" ? (payload.data.rejectedReason ?? null) : null,
       },
     });
+    await enqueueBusinessEvent(tx, "LeaveRequest", reviewed.id, "upsert", reviewed);
 
     // If approved, create OFF attendance days
     if (payload.data.action === "APPROVED") {
@@ -111,9 +126,10 @@ export async function PUT(request: NextRequest) {
         };
 
         if (existing) {
-          await tx.attendanceDay.update({ where: { id: existing.id }, data });
+          const updatedAttendance = await tx.attendanceDay.update({ where: { id: existing.id }, data });
+          await enqueueBusinessEvent(tx, "AttendanceDay", updatedAttendance.id, "upsert", updatedAttendance);
         } else {
-          await tx.attendanceDay.create({
+          const createdAttendance = await tx.attendanceDay.create({
             data: {
               userId: lr.userId,
               workDate,
@@ -121,6 +137,7 @@ export async function PUT(request: NextRequest) {
               ...data,
             },
           });
+          await enqueueBusinessEvent(tx, "AttendanceDay", createdAttendance.id, "upsert", createdAttendance);
         }
       }
     }

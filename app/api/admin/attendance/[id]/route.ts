@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { requireRoleRequest } from "@/lib/rbac";
 import { getActiveShiftForUser, recalculateAttendanceDay } from "@/lib/attendance";
 import { WARNING_FLAGS } from "@/lib/constants";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const schema = z.object({
   checkInAt: z.string().datetime().nullable().optional(),
@@ -19,6 +21,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const { id } = await params;
   const payload = schema.safeParse(await request.json().catch(() => null));
@@ -48,7 +52,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
 
     const shift = await getActiveShiftForUser(modified.userId, new Date(`${modified.workDate}T12:00:00.000+07:00`), tx);
-    return recalculateAttendanceDay(tx, modified, shift);
+    const recalculated = await recalculateAttendanceDay(tx, modified, shift);
+    await enqueueBusinessEvent(tx, "AttendanceDay", recalculated.id, "upsert", recalculated);
+    return recalculated;
   });
 
   await prisma.auditLog.create({

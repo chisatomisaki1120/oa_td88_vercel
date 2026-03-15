@@ -7,6 +7,8 @@ import { getOrCreateCurrentShiftAttendance } from "@/lib/attendance";
 import { prisma } from "@/lib/prisma";
 import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 const schema = z.object({
   breakType: z.nativeEnum(BreakType).default(BreakType.OTHER),
@@ -14,6 +16,8 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -34,13 +38,15 @@ export async function POST(request: NextRequest) {
     const openBreak = await tx.breakSession.findFirst({ where: { attendanceDayId: today.id, endAt: null } });
     if (openBreak) throw new Error("BREAK_OPEN");
 
-    return tx.breakSession.create({
+    const created = await tx.breakSession.create({
       data: {
         attendanceDayId: today.id,
         breakType: payload.data.breakType,
         startAt: new Date(),
       },
     });
+    await enqueueBusinessEvent(tx, "BreakSession", created.id, "upsert", created);
+    return created;
   }).catch((e) => {
     if (e instanceof Error && ["NO_CHECKIN", "ALREADY_CHECKOUT", "BREAK_OPEN"].includes(e.message)) return e.message;
     throw e;

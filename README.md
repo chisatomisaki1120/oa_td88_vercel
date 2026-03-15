@@ -1,6 +1,6 @@
 # OA TD88 - Web chấm công nội bộ
 
-Ứng dụng Next.js (App Router) cho chấm công nhân viên theo ngày với phân quyền `SuperAdmin/Admin/Nhân viên`, lưu dữ liệu qua Prisma. Dự án hiện chạy **Turso/libSQL-only** cho cả development và production.
+Ứng dụng Next.js (App Router) cho chấm công nhân viên theo ngày với phân quyền `SuperAdmin/Admin/Nhân viên`, lưu dữ liệu qua Prisma. Hiện đang trong quá trình refactor sang kiến trúc 2 lớp DB: business data và shared auth/session.
 
 ## Tính năng chính
 - Đăng nhập bằng `username/password` do admin cấp.
@@ -53,6 +53,26 @@ Lưu ý:
 - File local như `backups/`, `db-export-*.json`, `auth*` đã được loại khỏi deploy bằng `.vercelignore`.
 
 ## Deploy VPS + Turso
+
+> Note: MVP dual-database refactor is in progress. See `ARCHITECTURE-MVP.md` for the current split between business DB and shared auth/session DB.
+
+### Instance role flags
+- `APP_INSTANCE=vps|vercel`
+- `APP_ROLE=primary|standby|failover`
+
+Khuyến nghị:
+- VPS chính: `APP_INSTANCE=vps`, `APP_ROLE=primary`
+- Vercel standby: `APP_INSTANCE=vercel`, `APP_ROLE=standby`
+- Khi failover: chuyển Vercel sang `APP_ROLE=failover`
+
+Các file mẫu mới:
+- `.env.vps.primary.example`
+- `.env.vercel.standby.example`
+- `.env.vercel.failover.example`
+- `DEPLOY-CHECKLIST.md`
+
+Policy conflict khi failback/reconciliation: **first-write-wins** (ghi sớm hơn được giữ lại).
+
 1. Tạo file `.env` hoặc `.env.production` với tối thiểu:
    ```env
    NODE_ENV=production
@@ -94,13 +114,26 @@ Ghi chú:
 - `npm run build`: build production
 - `npm run start`: chạy production server (bind theo `HOSTNAME`, mặc định `0.0.0.0`)
 - `npm run lint`: lint code
-- `npm run db:generate`: generate Prisma Client
+- `npm run db:generate`: generate legacy compatibility Prisma Client
+- `npm run db:generate:auth`: generate auth Prisma Client from `prisma/auth.prisma`
+- `npm run db:generate:business`: generate business Prisma Client from `prisma/business.prisma`
+- `npm run db:generate:all`: generate all Prisma clients
 - `npm run db:push` / `npm run db:push:turso`: apply schema hiện tại lên Turso/libSQL
 - `npm run db:seed`: seed dữ liệu mẫu
 - `npm run db:setup`: generate + push schema Turso + seed
 - `npm run db:reset`: push schema Turso + seed lại
 - `npm run db:import:json:turso -- <duong-dan-file.json>`: import JSON lên Turso/libSQL
+- `npm run sync:outbox`: replay các `OutboxEvent` business từ DB local lên Turso replica một lần
+- `npm run sync:outbox:loop`: chạy loop sync định kỳ, phù hợp cron/PM2/systemd
+- `npm run sync:failback:dry-run`: mô phỏng reconcile Turso -> local (first-write-wins)
+- `npm run sync:failback:apply`: apply reconcile Turso -> local (first-write-wins)
 - `./scripts/db-sync-turso.ps1 [-Seed]`: đồng bộ schema Turso, tùy chọn seed luôn
+
+### Vận hành standby/failover
+- VPS primary: `APP_INSTANCE=vps`, `APP_ROLE=primary`
+- Vercel standby: `APP_INSTANCE=vercel`, `APP_ROLE=standby`
+- Khi Vercel ở `standby`, các business write route sẽ bị chặn.
+- Khi cần failover, đổi `APP_ROLE=failover` trên Vercel để cho phép business writes.
 
 ### Tổ chức scripts
 - `scripts/db/`: các script liên quan SQLite/Turso/import/export/schema

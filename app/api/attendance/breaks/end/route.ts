@@ -6,9 +6,13 @@ import { prisma } from "@/lib/prisma";
 import { validateCsrf } from "@/lib/csrf";
 import { minutesBetween } from "@/lib/time";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -28,19 +32,22 @@ export async function POST(request: NextRequest) {
     });
     if (!openBreak) throw new Error("NO_OPEN_BREAK");
 
-    await tx.breakSession.update({
+    const endedBreak = await tx.breakSession.update({
       where: { id: openBreak.id },
       data: {
         endAt: new Date(),
         durationMinutesComputed: minutesBetween(openBreak.startAt, new Date()),
       },
     });
+    await enqueueBusinessEvent(tx, "BreakSession", endedBreak.id, "upsert", endedBreak);
 
     const updatedAttendance = await tx.attendanceDay.findUnique({ where: { id: today.id } });
     if (!updatedAttendance) throw new Error("ATTENDANCE_NOT_FOUND");
 
     const shift = await getActiveShiftForUser(user.id, getScheduleReferenceForAttendance(updatedAttendance), tx);
-    return recalculateAttendanceDay(tx, updatedAttendance, shift);
+    const recalculated = await recalculateAttendanceDay(tx, updatedAttendance, shift);
+    await enqueueBusinessEvent(tx, "AttendanceDay", recalculated.id, "upsert", recalculated);
+    return recalculated;
   }).catch((e) => {
     if (e instanceof Error && ["NO_CHECKIN", "NO_OPEN_BREAK", "ATTENDANCE_NOT_FOUND"].includes(e.message)) return e.message;
     throw e;

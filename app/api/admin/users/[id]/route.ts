@@ -5,9 +5,11 @@ import { fail, ok } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { sanitizeUserForAudit } from "@/lib/audit";
 import { TIME_REGEX, PASSWORD_MIN_LENGTH } from "@/lib/constants";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 const updateSchema = z.object({
   fullName: z.string().min(1).max(100).optional(),
@@ -28,6 +30,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const { id } = await params;
   const payload = updateSchema.safeParse(await request.json().catch(() => null));
@@ -49,13 +53,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     delete data.password;
   }
 
-  const before = await prisma.user.findUnique({ where: { id } });
+  const before = await prismaSession.user.findUnique({ where: { id } });
   if (!before) return fail("Không tìm thấy user", 404);
   if (actor.role !== Role.SUPER_ADMIN && before.role === Role.SUPER_ADMIN) {
     return fail("Admin không được sửa tài khoản SuperAdmin", 403);
   }
 
-  const updated = await prisma.user.update({
+  const updated = await prismaSession.user.update({
     where: { id },
     data,
     select: {
@@ -94,22 +98,24 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const { id } = await params;
   if (id === actor.id) return fail("Không thể tự xóa tài khoản đang đăng nhập", 409);
 
-  const existing = await prisma.user.findUnique({ where: { id } });
+  const existing = await prismaSession.user.findUnique({ where: { id } });
   if (!existing) return fail("Không tìm thấy user", 404);
   if (actor.role !== Role.SUPER_ADMIN && existing.role === Role.SUPER_ADMIN) {
     return fail("Admin không được xóa SuperAdmin", 403);
   }
 
-  await prisma.user.update({
+  await prismaSession.user.update({
     where: { id },
     data: { deletedAt: new Date(), isActive: false },
   });
 
-  await prisma.authSession.deleteMany({ where: { userId: id } });
+  await prismaSession.authSession.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date(), revokedReason: `USER_DELETED:${actor.id}` } });
 
   await prisma.auditLog.create({
     data: {

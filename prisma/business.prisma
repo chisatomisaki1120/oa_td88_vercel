@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/business-client"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  EARLY_LEAVE
+  ABSENT
+  INCOMPLETE
+  OFF
+}
+
+enum BreakType {
+  WC
+  SMOKE
+  MEAL
+  OTHER
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Shift {
+  id                     String                    @id @default(cuid())
+  name                   String
+  startTime              String
+  endTime                String
+  lateGraceMinutes       Int                       @default(5)
+  earlyLeaveGraceMinutes Int                       @default(5)
+  breakPolicyJson        String
+  isActive               Boolean                   @default(true)
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+  assignments            EmployeeShiftAssignment[]
+}
+
+model EmployeeShiftAssignment {
+  id            String   @id @default(cuid())
+  userId        String
+  shiftId       String
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  shift         Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@index([userId, effectiveFrom])
+}
+
+model AttendanceDay {
+  id               String           @id @default(cuid())
+  userId           String
+  workDate         String
+  checkInAt        DateTime?
+  checkOutAt       DateTime?
+  status           AttendanceStatus @default(INCOMPLETE)
+  warningFlagsJson String           @default("[]")
+  workedMinutes    Int?
+  isOffDay         Boolean          @default(false)
+  offReason        String?
+  isDeducted       Boolean          @default(false)
+  createdBy        String?
+  updatedBy        String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  breakSessions    BreakSession[]
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@index([workDate, status])
+}
+
+model BreakSession {
+  id                      String        @id @default(cuid())
+  attendanceDayId         String
+  breakType               BreakType
+  startAt                 DateTime
+  endAt                   DateTime?
+  durationMinutesComputed Int?
+  createdAt               DateTime      @default(now())
+
+  attendanceDay           AttendanceDay @relation(fields: [attendanceDayId], references: [id], onDelete: Cascade)
+
+  @@index([attendanceDayId, startAt])
+  @@index([attendanceDayId, endAt])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String
+  beforeJson  String?
+  afterJson   String?
+  createdAt   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model LeaveRequest {
+  id             String             @id @default(cuid())
+  userId         String
+  year           Int
+  dates          String
+  reason         String?
+  status         LeaveRequestStatus @default(PENDING)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  rejectedReason String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([userId, year])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OutboxEvent {
+  id            String   @id @default(cuid())
+  aggregateType String
+  aggregateId   String
+  operation     String
+  payloadJson   String
+  occurredAt    DateTime @default(now())
+  sentAt        DateTime?
+  attemptCount  Int      @default(0)
+  lastError     String?
+
+  @@index([sentAt, occurredAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+}
+
+model SyncState {
+  id                  String   @id
+  mode                String
+  lastEntity          String?
+  lastCursorCreatedAt DateTime?
+  lastCursorId        String?
+  lastAppliedAt       DateTime?
+  lastRunStatus       String?
+  lastError           String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ReconciliationLog {
+  id              String   @id @default(cuid())
+  batchId         String
+  entityType      String
+  entityId        String
+  action          String
+  reason          String?
+  remoteCreatedAt DateTime?
+  localCreatedAt  DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([batchId])
+  @@index([entityType, entityId, createdAt])
+}

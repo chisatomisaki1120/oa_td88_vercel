@@ -5,9 +5,13 @@ import { getActiveShiftForUser, getOrCreateCurrentShiftAttendance, getScheduleRe
 import { prisma } from "@/lib/prisma";
 import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -35,7 +39,9 @@ export async function POST(request: NextRequest) {
     });
 
     const shift = await getActiveShiftForUser(user.id, getScheduleReferenceForAttendance(updated), tx);
-    return recalculateAttendanceDay(tx, updated, shift);
+    const recalculated = await recalculateAttendanceDay(tx, updated, shift);
+    await enqueueBusinessEvent(tx, "AttendanceDay", recalculated.id, "upsert", recalculated);
+    return recalculated;
   }).catch((e) => {
     if (!(e instanceof Error)) throw e;
     if (e.message === "NO_CHECKIN") return "NO_CHECKIN" as const;

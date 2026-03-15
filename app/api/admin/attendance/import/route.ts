@@ -6,6 +6,8 @@ import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
 import { requireRoleRequest } from "@/lib/rbac";
 import { isValidDate } from "@/lib/time";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 type ImportRow = {
   row: number;
@@ -54,6 +56,8 @@ export async function POST(request: NextRequest) {
   const user = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!user) return fail("Unauthorized", 401);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const formData = await request.formData().catch(() => null);
   if (!formData) return fail("Invalid form data", 400);
@@ -128,10 +132,13 @@ export async function POST(request: NextRequest) {
     if (checkInAt && checkOutAt) status = AttendanceStatus.PRESENT;
     else if (!checkInAt && !checkOutAt) status = AttendanceStatus.ABSENT;
 
-    await prisma.attendanceDay.upsert({
-      where: { userId_workDate: { userId, workDate } },
-      create: { userId, workDate, checkInAt, checkOutAt, status, workedMinutes },
-      update: { checkInAt, checkOutAt, status, workedMinutes },
+    await prisma.$transaction(async (tx) => {
+      const saved = await tx.attendanceDay.upsert({
+        where: { userId_workDate: { userId, workDate } },
+        create: { userId, workDate, checkInAt, checkOutAt, status, workedMinutes },
+        update: { checkInAt, checkOutAt, status, workedMinutes },
+      });
+      await enqueueBusinessEvent(tx, "AttendanceDay", saved.id, "upsert", saved);
     });
 
     imported++;

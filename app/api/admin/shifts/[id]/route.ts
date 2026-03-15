@@ -6,6 +6,8 @@ import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
 import { requireRoleRequest } from "@/lib/rbac";
 import { TIME_REGEX } from "@/lib/constants";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const breakPolicySchema = z.object({
   wc: z.object({ maxCount: z.number().int().min(0), maxMinutesEach: z.number().int().min(0) }),
@@ -27,6 +29,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const { id } = await params;
   const payload = patchSchema.safeParse(await request.json().catch(() => null));
@@ -44,7 +48,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (payload.data.breakPolicyJson !== undefined) data.breakPolicyJson = JSON.stringify(payload.data.breakPolicyJson);
   if (payload.data.isActive !== undefined) data.isActive = payload.data.isActive;
 
-  const updated = await prisma.shift.update({ where: { id }, data });
+  const updated = await prisma.$transaction(async (tx) => {
+    const modified = await tx.shift.update({ where: { id }, data });
+    await enqueueBusinessEvent(tx, "Shift", modified.id, "upsert", modified as never);
+    return modified;
+  });
   return ok(updated);
 }
 
@@ -63,10 +71,17 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
   if (existing._count.assignments > 0) {
     // Soft-delete: deactivate instead of hard delete when assignments exist
-    const updated = await prisma.shift.update({ where: { id }, data: { isActive: false } });
+    const updated = await prisma.$transaction(async (tx) => {
+      const modified = await tx.shift.update({ where: { id }, data: { isActive: false } });
+      await enqueueBusinessEvent(tx, "Shift", modified.id, "upsert", modified as never);
+      return modified;
+    });
     return ok({ ...updated, softDeleted: true });
   }
 
-  await prisma.shift.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.shift.delete({ where: { id } });
+    await enqueueBusinessEvent(tx, "Shift", id, "delete", { id } as never);
+  });
   return ok({ deleted: id });
 }

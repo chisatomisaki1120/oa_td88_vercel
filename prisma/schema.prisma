@@ -159,24 +159,28 @@ model AuditLog {
 }
 
 model AuthSession {
-  id         String   @id @default(cuid())
-  userId     String
-  tokenHash  String   @unique
-  ipAddress  String
-  userAgent  String?
-  deviceKey  String
-  isSharedIp Boolean  @default(false)
-  isSharedDevice Boolean @default(false)
-  expiresAt  DateTime
-  lastSeenAt DateTime @default(now())
-  createdAt  DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  tokenHash      String   @unique
+  ipAddress      String
+  userAgent      String?
+  deviceKey      String
+  isSharedIp     Boolean  @default(false)
+  isSharedDevice Boolean  @default(false)
+  appInstance    String?
+  revokedAt      DateTime?
+  revokedReason  String?
+  expiresAt      DateTime
+  lastSeenAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
 
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt, lastSeenAt])
   @@index([deviceKey])
   @@index([ipAddress])
   @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 model LoginAccessLog {
@@ -191,6 +195,7 @@ model LoginAccessLog {
   failedReason   String?
   isSharedIp     Boolean  @default(false)
   isSharedDevice Boolean  @default(false)
+  appInstance    String?
   createdAt      DateTime @default(now())
 
   user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -228,5 +233,48 @@ model LoginSecurityConfig {
   enforceSingleAccountPerDeviceIp Boolean  @default(true)
   blockMobilePhoneLogin           Boolean  @default(true)
   updatedAt                       DateTime @updatedAt
+}
+
+model OutboxEvent {
+  id            String   @id @default(cuid())
+  aggregateType String
+  aggregateId   String
+  operation     String
+  payloadJson   String
+  occurredAt    DateTime @default(now())
+  sentAt        DateTime?
+  attemptCount  Int      @default(0)
+  lastError     String?
+
+  @@index([sentAt, occurredAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+}
+
+model SyncState {
+  id                  String   @id
+  mode                String
+  lastEntity          String?
+  lastCursorCreatedAt DateTime?
+  lastCursorId        String?
+  lastAppliedAt       DateTime?
+  lastRunStatus       String?
+  lastError           String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ReconciliationLog {
+  id              String   @id @default(cuid())
+  batchId         String
+  entityType      String
+  entityId        String
+  action          String
+  reason          String?
+  remoteCreatedAt DateTime?
+  localCreatedAt  DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([batchId])
+  @@index([entityType, entityId, createdAt])
 }
 

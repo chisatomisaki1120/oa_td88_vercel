@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 
 export const LOGIN_SECURITY_CONFIG_ID = 1;
 
@@ -15,7 +15,7 @@ const DEFAULT_CONFIG: LoginSecurityConfigValue = {
 };
 
 export async function getLoginSecurityConfig(): Promise<LoginSecurityConfigValue> {
-  const config = await prisma.loginSecurityConfig.findUnique({
+  const config = await prismaSession.loginSecurityConfig.findUnique({
     where: { id: LOGIN_SECURITY_CONFIG_ID },
   });
   if (!config) return DEFAULT_CONFIG;
@@ -27,7 +27,7 @@ export async function getLoginSecurityConfig(): Promise<LoginSecurityConfigValue
 }
 
 export async function saveLoginSecurityConfig(data: LoginSecurityConfigValue): Promise<LoginSecurityConfigValue> {
-  const saved = await prisma.loginSecurityConfig.upsert({
+  const saved = await prismaSession.loginSecurityConfig.upsert({
     where: { id: LOGIN_SECURITY_CONFIG_ID },
     create: { id: LOGIN_SECURITY_CONFIG_ID, ...data },
     update: data,

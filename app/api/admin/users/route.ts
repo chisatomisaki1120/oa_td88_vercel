@@ -4,9 +4,10 @@ import { z } from "zod";
 import { fail, ok } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { validateCsrf } from "@/lib/csrf";
-import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { TIME_REGEX, PASSWORD_MIN_LENGTH } from "@/lib/constants";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 const createSchema = z.object({
   username: z.string().min(3).max(50),
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
 
-  const users = await prisma.user.findMany({
+  const users = await prismaSession.user.findMany({
     where: {
       deletedAt: null,
       ...(actor.role === Role.SUPER_ADMIN ? {} : { role: { not: Role.SUPER_ADMIN } }),
@@ -59,6 +60,8 @@ export async function POST(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const payload = createSchema.safeParse(await request.json().catch(() => null));
   if (!payload.success) return fail("Invalid payload", 400, payload.error.flatten());
@@ -71,7 +74,7 @@ export async function POST(request: NextRequest) {
     return fail("Admin không được tạo SuperAdmin", 403);
   }
 
-  const existing = await prisma.user.findUnique({ where: { username: payload.data.username } });
+  const existing = await prismaSession.user.findUnique({ where: { username: payload.data.username } });
 
   if (existing && !existing.deletedAt) {
     return fail("Tên đăng nhập đã tồn tại", 409);
@@ -79,7 +82,7 @@ export async function POST(request: NextRequest) {
 
   if (existing && existing.deletedAt) {
     // Reactivate soft-deleted user with new data
-    const user = await prisma.user.update({
+    const user = await prismaSession.user.update({
       where: { id: existing.id },
       data: {
         passwordHash: await hashPassword(payload.data.password),
@@ -116,7 +119,7 @@ export async function POST(request: NextRequest) {
     return ok(user, { status: 201 });
   }
 
-  const user = await prisma.user
+  const user = await prismaSession.user
     .create({
       data: {
         username: payload.data.username,

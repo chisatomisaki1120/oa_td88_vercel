@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { LOGIN_WINDOW_MS, LOGIN_MAX_ATTEMPTS } from "@/lib/constants";
 
 const apiRateLimitStore = new Map<string, { count: number; resetAt: number }>();
@@ -41,8 +41,8 @@ export async function consumeLoginAttempt(ipAddress: string, usernameInput: stri
   };
 
   const [attemptCount, firstAttempt] = await Promise.all([
-    prisma.loginAccessLog.count({ where }),
-    prisma.loginAccessLog.findFirst({
+    prismaSession.loginAccessLog.count({ where }),
+    prismaSession.loginAccessLog.findFirst({
       where,
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },

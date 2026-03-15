@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import { Role } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { SESSION_DAYS, SESSION_TOUCH_INTERVAL_MS } from "@/lib/constants";
 
 export const SESSION_COOKIE = "oa_session";
@@ -42,7 +42,7 @@ export async function createSession(userId: string, meta: SessionMeta & { rememb
   const tokenHash = hashToken(rawToken);
   const days = meta.rememberMe ? SESSION_DAYS : SHORT_SESSION_DAYS;
   const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-  await prisma.authSession.create({
+  await prismaSession.authSession.create({
     data: {
       userId,
       tokenHash,
@@ -51,6 +51,7 @@ export async function createSession(userId: string, meta: SessionMeta & { rememb
       deviceKey: meta.deviceKey,
       isSharedIp: Boolean(meta.isSharedIp),
       isSharedDevice: Boolean(meta.isSharedDevice),
+      appInstance: process.env.APP_INSTANCE ?? null,
       expiresAt,
     },
   });
@@ -61,7 +62,10 @@ export async function destroySession(rawToken: string | undefined): Promise<void
   if (!rawToken) {
     return;
   }
-  await prisma.authSession.deleteMany({ where: { tokenHash: hashToken(rawToken) } });
+  await prismaSession.authSession.updateMany({
+    where: { tokenHash: hashToken(rawToken) },
+    data: { revokedAt: new Date(), revokedReason: "LOGOUT" },
+  });
 }
 
 export async function getSessionUserFromRequest(request: NextRequest): Promise<SessionUser | null> {
@@ -82,12 +86,14 @@ export async function getSessionUserFromCookies(): Promise<SessionUser | null> {
 }
 
 async function getSessionUserFromToken(token: string): Promise<SessionUser | null> {
-  const session = await prisma.authSession.findUnique({
+  const session = await prismaSession.authSession.findUnique({
     where: { tokenHash: hashToken(token) },
     select: {
       id: true,
       expiresAt: true,
       lastSeenAt: true,
+      revokedAt: true,
+      revokedReason: true,
       user: {
         select: {
           id: true,
@@ -101,13 +107,13 @@ async function getSessionUserFromToken(token: string): Promise<SessionUser | nul
     },
   });
 
-  if (!session || !session.user || session.expiresAt < new Date() || !session.user.isActive) {
+  if (!session || !session.user || session.expiresAt < new Date() || session.revokedAt || !session.user.isActive) {
     return null;
   }
 
   const now = new Date();
   if (!session.lastSeenAt || now.getTime() - session.lastSeenAt.getTime() >= SESSION_TOUCH_INTERVAL_MS) {
-    await prisma.authSession
+    await prismaSession.authSession
       .update({
         where: { id: session.id },
         data: { lastSeenAt: now },

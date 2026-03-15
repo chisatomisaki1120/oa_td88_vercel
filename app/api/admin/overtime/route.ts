@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { Role } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { vnMonthString, parseHHMM } from "@/lib/time";
 
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
   const month = searchParams.get("month") ?? vnMonthString();
   if (!/^\d{4}-\d{2}$/.test(month)) return fail("month phải có dạng YYYY-MM", 400);
 
-  const users = await prisma.user.findMany({
+  const users = await prismaSession.user.findMany({
     where: { isActive: true, deletedAt: null },
     select: {
       id: true, fullName: true, username: true, department: true,

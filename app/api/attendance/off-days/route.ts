@@ -4,8 +4,11 @@ import { AttendanceStatus } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { getSessionUserFromRequest } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const schema = z.object({
   dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(62),
@@ -20,6 +23,8 @@ type OffDayBulkResult = {
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -33,7 +38,7 @@ export async function POST(request: NextRequest) {
   const reason = payload.data.reason ?? null;
 
   const result = await prisma.$transaction(async (tx): Promise<OffDayBulkResult | "USER_NOT_FOUND"> => {
-    const me = await tx.user.findUnique({
+    const me = await prismaSession.user.findUnique({
       where: { id: user.id },
       select: { allowedOffDaysPerMonth: true },
     });
@@ -99,12 +104,13 @@ export async function POST(request: NextRequest) {
         };
 
         if (existing) {
-          await tx.attendanceDay.update({
+          const updated = await tx.attendanceDay.update({
             where: { id: existing.id },
             data,
           });
+          await enqueueBusinessEvent(tx, "AttendanceDay", updated.id, "upsert", updated);
         } else {
-          await tx.attendanceDay.create({
+          const created = await tx.attendanceDay.create({
             data: {
               userId: user.id,
               workDate,
@@ -112,6 +118,7 @@ export async function POST(request: NextRequest) {
               ...data,
             },
           });
+          await enqueueBusinessEvent(tx, "AttendanceDay", created.id, "upsert", created);
         }
         updatedDates.push(workDate);
       }
@@ -136,6 +143,8 @@ const deleteSchema = z.object({
 
 export async function DELETE(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -166,7 +175,7 @@ export async function DELETE(request: NextRequest) {
         continue;
       }
 
-      await tx.attendanceDay.update({
+      const updated = await tx.attendanceDay.update({
         where: { id: day.id },
         data: {
           isOffDay: false,
@@ -178,6 +187,7 @@ export async function DELETE(request: NextRequest) {
           updatedBy: user.id,
         },
       });
+      await enqueueBusinessEvent(tx, "AttendanceDay", updated.id, "upsert", updated);
       cancelledDates.push(day.workDate);
     }
 

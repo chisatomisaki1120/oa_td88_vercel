@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { Role } from "@prisma/client";
 import { fail, ok } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { ATTENDANCE_DEFAULT_LIMIT, ATTENDANCE_MAX_LIMIT } from "@/lib/constants";
 import { isValidDate } from "@/lib/time";
@@ -32,14 +33,12 @@ export async function GET(request: NextRequest) {
     where.checkOutAt = null;
   }
 
-  const [items, total] = await Promise.all([
+  const [allItems, users] = await Promise.all([
     prisma.attendanceDay.findMany({
-      where: {
-        ...where,
-        user: department ? { department } : undefined,
-      },
+      where,
       select: {
         id: true,
+        userId: true,
         workDate: true,
         status: true,
         checkInAt: true,
@@ -49,14 +48,7 @@ export async function GET(request: NextRequest) {
         isDeducted: true,
         offReason: true,
         warningFlagsJson: true,
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            username: true,
-            department: true,
-          },
-        },
+        createdAt: true,
         breakSessions: {
           select: {
             id: true,
@@ -69,16 +61,20 @@ export async function GET(request: NextRequest) {
         },
       },
       orderBy: [{ workDate: "desc" }, { createdAt: "desc" }],
-      take,
-      skip: (page - 1) * take,
     }),
-    prisma.attendanceDay.count({
-      where: {
-        ...where,
-        user: department ? { department } : undefined,
-      },
+    prismaSession.user.findMany({
+      where: { deletedAt: null },
+      select: { id: true, fullName: true, username: true, department: true },
     }),
   ]);
+
+  const userMap = new Map(users.map((u) => [u.id, u]));
+  const filteredItems = allItems
+    .map((item) => ({ ...item, user: userMap.get(item.userId) ?? null }))
+    .filter((item) => item.user && (!department || item.user.department === department));
+
+  const total = filteredItems.length;
+  const items = filteredItems.slice((page - 1) * take, (page - 1) * take + take);
 
   return ok({ items, total, page, pageSize: take, totalPages: Math.ceil(total / take) });
 }

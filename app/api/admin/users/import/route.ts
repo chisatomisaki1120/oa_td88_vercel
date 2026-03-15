@@ -5,7 +5,10 @@ import { fail, ok } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const VALID_ROLES = ["SUPER_ADMIN", "ADMIN", "EMPLOYEE"] as const;
 
@@ -40,6 +43,8 @@ export async function POST(request: NextRequest) {
   const user = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!user) return fail("Unauthorized", 401);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const formData = await request.formData().catch(() => null);
   if (!formData) return fail("Invalid form data", 400);
@@ -80,7 +85,7 @@ export async function POST(request: NextRequest) {
     return fail(`Cần cột: username/mã NV và fullName/họ tên. Các cột: ${cols.join(", ")}`, 400);
   }
 
-  const existingUsers = await prisma.user.findMany({
+  const existingUsers = await prismaSession.user.findMany({
     where: { deletedAt: null },
     select: { id: true, username: true, role: true },
   });
@@ -261,58 +266,60 @@ export async function POST(request: NextRequest) {
   if (toCreate.length === 0 && toUpdate.length === 0) return fail("Không có nhân viên hợp lệ để import", 400);
 
   const now = new Date();
-  const { created, updated } = await prisma.$transaction(async (tx) => {
-    let created = 0;
-    for (const userData of toCreate) {
-      const { shiftId, ...userFields } = userData;
-      const newUser = await tx.user.create({ data: userFields });
-      if (shiftId) {
-        await tx.employeeShiftAssignment.create({
+  let created = 0;
+  for (const userData of toCreate) {
+    const { shiftId, ...userFields } = userData;
+    const newUser = await prismaSession.user.create({ data: userFields });
+    if (shiftId) {
+      await prisma.$transaction(async (tx) => {
+        const createdAssignment = await tx.employeeShiftAssignment.create({
           data: {
             userId: newUser.id,
             shiftId,
             effectiveFrom: now,
           },
         });
-      }
-      created++;
+        await enqueueBusinessEvent(tx, "EmployeeShiftAssignment", createdAssignment.id, "upsert", createdAssignment as never);
+      });
     }
+    created++;
+  }
 
-    let updated = 0;
-    for (const userData of toUpdate) {
-      const { existingUserId, shiftId, passwordHash, ...fields } = userData;
-      const updateData: Record<string, unknown> = { ...fields };
-      if (passwordHash) updateData.passwordHash = passwordHash;
+  let updated = 0;
+  for (const userData of toUpdate) {
+    const { existingUserId, shiftId, passwordHash, ...fields } = userData;
+    const updateData: Record<string, unknown> = { ...fields };
+    if (passwordHash) updateData.passwordHash = passwordHash;
 
-      await tx.user.update({ where: { id: existingUserId }, data: updateData });
+    await prismaSession.user.update({ where: { id: existingUserId }, data: updateData });
 
-      if (shiftId) {
+    if (shiftId) {
+      await prisma.$transaction(async (tx) => {
         await tx.employeeShiftAssignment.updateMany({
           where: { userId: existingUserId, effectiveTo: null },
           data: { effectiveTo: now },
         });
-        await tx.employeeShiftAssignment.create({
+        const createdAssignment = await tx.employeeShiftAssignment.create({
           data: {
             userId: existingUserId,
             shiftId,
             effectiveFrom: now,
           },
         });
-      }
-      updated++;
+        await enqueueBusinessEvent(tx, "EmployeeShiftAssignment", createdAssignment.id, "upsert", createdAssignment as never);
+      });
     }
+    updated++;
+  }
 
-    await tx.auditLog.create({
-      data: {
-        actorUserId: user.id,
-        action: "IMPORT_USERS",
-        entityType: "User",
-        entityId: "bulk",
-        afterJson: JSON.stringify({ created, updated, total: rawRows.length }),
-      },
-    });
-
-    return { created, updated };
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: user.id,
+      action: "IMPORT_USERS",
+      entityType: "User",
+      entityId: "bulk",
+      afterJson: JSON.stringify({ created, updated, total: rawRows.length }),
+    },
   });
 
   return ok({ mode: "commit", created, updated, total: rawRows.length });

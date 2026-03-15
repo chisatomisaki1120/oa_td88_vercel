@@ -3,18 +3,20 @@ import * as XLSX from "xlsx";
 import { Role } from "@prisma/client";
 import { fail } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 
 export async function GET(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
 
-  const users = await prisma.user.findMany({
+  const users = await prismaSession.user.findMany({
     where: {
       deletedAt: null,
       ...(actor.role === Role.SUPER_ADMIN ? {} : { role: { not: Role.SUPER_ADMIN } }),
     },
     select: {
+      id: true,
       username: true,
       fullName: true,
       email: true,
@@ -28,14 +30,26 @@ export async function GET(request: NextRequest) {
       earlyLeaveGraceMinutes: true,
       workMode: true,
       allowedOffDaysPerMonth: true,
-      shiftAssignments: {
-        where: { effectiveTo: null },
-        select: { shift: { select: { name: true } } },
-        take: 1,
-      },
+      createdAt: true,
     },
     orderBy: { createdAt: "asc" },
   });
+
+  const userIds = users.map((u) => u.id);
+  const assignments = userIds.length
+    ? await prisma.employeeShiftAssignment.findMany({
+        where: { userId: { in: userIds }, effectiveTo: null },
+        include: { shift: { select: { name: true } } },
+        orderBy: { effectiveFrom: "desc" },
+      })
+    : [];
+
+  const shiftByUserId = new Map<string, string>();
+  for (const assignment of assignments) {
+    if (!shiftByUserId.has(assignment.userId)) {
+      shiftByUserId.set(assignment.userId, assignment.shift.name);
+    }
+  }
 
   const roleLabel = (r: string) => {
     switch (r) {
@@ -70,7 +84,7 @@ export async function GET(request: NextRequest) {
       u.phone ?? "",
       u.department ?? "",
       roleLabel(u.role),
-      u.shiftAssignments[0]?.shift.name ?? "",
+      shiftByUserId.get(u.id) ?? "",
       u.isActive ? "Hoạt động" : "Ngừng",
       u.workStartTime ?? "",
       u.workEndTime ?? "",
@@ -84,20 +98,20 @@ export async function GET(request: NextRequest) {
   const workbook = XLSX.utils.book_new();
   const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
   worksheet["!cols"] = [
-    { wch: 18 }, // username
-    { wch: 24 }, // fullName
-    { wch: 24 }, // email
-    { wch: 14 }, // phone
-    { wch: 18 }, // department
-    { wch: 16 }, // role
-    { wch: 20 }, // shift
-    { wch: 12 }, // status
-    { wch: 10 }, // workStartTime
-    { wch: 10 }, // workEndTime
-    { wch: 16 }, // lateGrace
-    { wch: 18 }, // earlyLeaveGrace
-    { wch: 10 }, // workMode
-    { wch: 12 }, // offDays
+    { wch: 18 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 14 },
+    { wch: 18 },
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 12 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 10 },
+    { wch: 12 },
   ];
   XLSX.utils.book_append_sheet(workbook, worksheet, "NhanVien");
 

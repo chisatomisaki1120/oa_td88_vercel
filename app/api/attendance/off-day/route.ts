@@ -5,9 +5,12 @@ import { fail, ok } from "@/lib/api";
 import { getSessionUserFromRequest } from "@/lib/auth";
 import { getOrCreateTodayAttendance } from "@/lib/attendance";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { validateCsrf } from "@/lib/csrf";
 import { vnDateString } from "@/lib/time";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const schema = z.object({
   reason: z.string().max(300).optional(),
@@ -15,6 +18,8 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -32,7 +37,7 @@ export async function POST(request: NextRequest) {
     if (today.checkInAt || today.checkOutAt) throw new Error("ALREADY_ATTENDED");
     if (today.isOffDay) throw new Error("ALREADY_OFF");
 
-    const me = await tx.user.findUnique({
+    const me = await prismaSession.user.findUnique({
       where: { id: user.id },
       select: { allowedOffDaysPerMonth: true },
     });
@@ -50,7 +55,7 @@ export async function POST(request: NextRequest) {
     const nextUsed = usedOff + 1;
     const isDeducted = nextUsed > me.allowedOffDaysPerMonth;
 
-    return tx.attendanceDay.update({
+    const updated = await tx.attendanceDay.update({
       where: { id: today.id },
       data: {
         isOffDay: true,
@@ -62,6 +67,8 @@ export async function POST(request: NextRequest) {
         updatedBy: user.id,
       },
     });
+    await enqueueBusinessEvent(tx, "AttendanceDay", updated.id, "upsert", updated);
+    return updated;
   }).catch((e) => {
     if (e instanceof Error && ["ALREADY_ATTENDED", "ALREADY_OFF", "USER_NOT_FOUND"].includes(e.message)) return e.message;
     throw e;

@@ -5,9 +5,11 @@ import { fail, ok } from "@/lib/api";
 import { hashPassword, verifyPassword } from "@/lib/auth";
 import { validateCsrf } from "@/lib/csrf";
 import { prisma } from "@/lib/prisma";
+import { prismaSession } from "@/lib/prisma-session";
 import { requireUser } from "@/lib/rbac";
 import { sanitizeUserForAudit } from "@/lib/audit";
 import { vnMonthString } from "@/lib/time";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 const updateSchema = z
   .object({
@@ -33,7 +35,7 @@ export async function GET(request: NextRequest) {
   const user = await requireUser(request);
   if (!user) return fail("Unauthorized", 401);
 
-  const me = await prisma.user.findUnique({
+  const me = await prismaSession.user.findUnique({
     where: { id: user.id },
     select: {
       id: true,
@@ -85,11 +87,13 @@ export async function PATCH(request: NextRequest) {
   const user = await requireUser(request);
   if (!user) return fail("Unauthorized", 401);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const payload = updateSchema.safeParse(await request.json().catch(() => null));
   if (!payload.success) return fail("Invalid payload", 400, payload.error.flatten());
 
-  const current = await prisma.user.findUnique({ where: { id: user.id } });
+  const current = await prismaSession.user.findUnique({ where: { id: user.id } });
   if (!current) return fail("Không tìm thấy tài khoản", 404);
 
   if (payload.data.newPassword) {
@@ -115,7 +119,7 @@ export async function PATCH(request: NextRequest) {
     if (payload.data.workMode !== undefined) data.workMode = payload.data.workMode;
   }
 
-  const updated = await prisma.user.update({
+  const updated = await prismaSession.user.update({
     where: { id: user.id },
     data,
     select: {

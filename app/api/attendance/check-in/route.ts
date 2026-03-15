@@ -6,9 +6,13 @@ import { computeCheckInStatus, getActiveShiftForUser, getOrCreateCurrentShiftAtt
 import { prisma } from "@/lib/prisma";
 import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
   const user = await getSessionUserFromRequest(request);
   if (!user) return fail("Unauthorized", 401);
 
@@ -25,7 +29,7 @@ export async function POST(request: NextRequest) {
       const shift = await getActiveShiftForUser(user.id, now, tx);
       const status = computeCheckInStatus(shift, now);
 
-      return tx.attendanceDay.update({
+      const updated = await tx.attendanceDay.update({
         where: { id: today.id },
         data: {
           checkInAt: now,
@@ -35,6 +39,8 @@ export async function POST(request: NextRequest) {
         },
         include: { breakSessions: true },
       });
+      await enqueueBusinessEvent(tx, "AttendanceDay", updated.id, "upsert", updated);
+      return updated;
     })
     .catch((e) => {
       if (e instanceof Error && e.message === "ALREADY_CHECKED_IN") return null;

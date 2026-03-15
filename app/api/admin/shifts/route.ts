@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { requireRoleRequest } from "@/lib/rbac";
 import { DEFAULT_BREAK_POLICY } from "@/lib/attendance";
 import { TIME_REGEX } from "@/lib/constants";
+import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 
 const breakPolicySchema = z.object({
   wc: z.object({ maxCount: z.number().int().min(0), maxMinutesEach: z.number().int().min(0) }),
@@ -36,15 +38,21 @@ export async function POST(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
   if (!actor) return fail("Forbidden", 403);
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
+  const writeBlocked = ensureBusinessWriteAllowed();
+  if (writeBlocked) return writeBlocked;
 
   const payload = schema.safeParse(await request.json().catch(() => null));
   if (!payload.success) return fail("Invalid payload", 400, payload.error.flatten());
 
-  const shift = await prisma.shift.create({
-    data: {
-      ...payload.data,
-      breakPolicyJson: JSON.stringify(payload.data.breakPolicyJson ?? DEFAULT_BREAK_POLICY),
-    },
+  const shift = await prisma.$transaction(async (tx) => {
+    const created = await tx.shift.create({
+      data: {
+        ...payload.data,
+        breakPolicyJson: JSON.stringify(payload.data.breakPolicyJson ?? DEFAULT_BREAK_POLICY),
+      },
+    });
+    await enqueueBusinessEvent(tx, "Shift", created.id, "upsert", created as never);
+    return created;
   });
 
   return ok(shift, { status: 201 });
