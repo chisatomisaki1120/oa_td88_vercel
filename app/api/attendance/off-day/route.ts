@@ -11,6 +11,7 @@ import { vnDateString } from "@/lib/time";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const schema = z.object({
   reason: z.string().max(300).optional(),
@@ -78,5 +79,6 @@ export async function POST(request: NextRequest) {
   if (result === "ALREADY_OFF") return fail("Bạn đã báo off hôm nay", 409);
   if (result === "USER_NOT_FOUND") return fail("Không tìm thấy tài khoản", 404);
 
+  invalidateBusinessReadCaches();
   return ok(result);
 }

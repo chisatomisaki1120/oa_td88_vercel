@@ -9,6 +9,7 @@ import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const VALID_ROLES = ["SUPER_ADMIN", "ADMIN", "EMPLOYEE"] as const;
 
@@ -322,5 +323,6 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  invalidateBusinessReadCaches();
   return ok({ mode: "commit", created, updated, total: rawRows.length });
 }

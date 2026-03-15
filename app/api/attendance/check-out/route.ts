@@ -7,6 +7,7 @@ import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
@@ -54,5 +55,6 @@ export async function POST(request: NextRequest) {
   if (result === "ALREADY_CHECKOUT") return fail("Bạn đã check-out", 409);
   if (result === "BREAK_OPEN") return fail("Bạn đang trong phiên nghỉ, vui lòng kết thúc nghỉ trước", 409);
 
+  invalidateBusinessReadCaches();
   return ok(result);
 }

@@ -8,6 +8,7 @@ import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const schema = z.object({
   userId: z.string().min(1),
@@ -70,5 +71,6 @@ export async function POST(request: NextRequest) {
   if (assignment === "SHIFT_NOT_FOUND") return fail("Ca làm việc không tồn tại", 404);
   if (assignment === "OVERLAPPING_ASSIGNMENT") return fail("Khoảng thời gian ca làm bị chồng chéo với assignment hiện có", 409);
 
+  invalidateBusinessReadCaches();
   return ok(assignment, { status: 201 });
 }

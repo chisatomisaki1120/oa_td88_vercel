@@ -8,6 +8,7 @@ import { prismaSession } from "@/lib/prisma-session";
 import { validateCsrf } from "@/lib/csrf";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("ALL"),
@@ -147,5 +148,6 @@ export async function PUT(request: NextRequest) {
 
   if (result === "NOT_FOUND") return fail("Đơn nghỉ phép không tồn tại", 404);
   if (result === "ALREADY_REVIEWED") return fail("Đơn nghỉ phép đã được duyệt/từ chối trước đó", 409);
+  invalidateBusinessReadCaches();
   return ok({ status: payload.data.action });
 }

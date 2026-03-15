@@ -8,6 +8,7 @@ import { requireRoleRequest } from "@/lib/rbac";
 import { TIME_REGEX } from "@/lib/constants";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const breakPolicySchema = z.object({
   wc: z.object({ maxCount: z.number().int().min(0), maxMinutesEach: z.number().int().min(0) }),
@@ -83,5 +84,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     await tx.shift.delete({ where: { id } });
     await enqueueBusinessEvent(tx, "Shift", id, "delete", { id } as never);
   });
+  invalidateBusinessReadCaches();
   return ok({ deleted: id });
 }
+

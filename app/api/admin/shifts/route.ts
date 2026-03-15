@@ -9,6 +9,7 @@ import { DEFAULT_BREAK_POLICY } from "@/lib/attendance";
 import { TIME_REGEX } from "@/lib/constants";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const breakPolicySchema = z.object({
   wc: z.object({ maxCount: z.number().int().min(0), maxMinutesEach: z.number().int().min(0) }),
@@ -55,5 +56,6 @@ export async function POST(request: NextRequest) {
     return created;
   });
 
+  invalidateBusinessReadCaches();
   return ok(shift, { status: 201 });
 }

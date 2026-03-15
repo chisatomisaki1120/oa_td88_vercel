@@ -8,6 +8,7 @@ import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
@@ -52,5 +53,6 @@ export async function POST(request: NextRequest) {
   if (!result) return fail("Bạn đã check-in ca hiện tại", 409);
   if (result === "OFF_DAY") return fail("Bạn đã báo off cho hôm nay", 409);
   if (result === "PREVIOUS_SHIFT_OPEN") return fail("Bạn chưa xuống ca ngày hôm trước. Vui lòng liên hệ quản lý để xử lý.", 409);
+  invalidateBusinessReadCaches();
   return ok(result);
 }

@@ -9,6 +9,7 @@ import { getActiveShiftForUser, recalculateAttendanceDay } from "@/lib/attendanc
 import { WARNING_FLAGS } from "@/lib/constants";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const schema = z.object({
   checkInAt: z.string().datetime().nullable().optional(),
@@ -68,5 +69,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     },
   });
 
+  invalidateBusinessReadCaches();
   return ok(updated);
 }

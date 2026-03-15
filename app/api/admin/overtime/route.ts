@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { vnMonthString, parseHHMM } from "@/lib/time";
+import { withTtlCache } from "@/lib/ttl-cache";
 
 // GET /api/admin/overtime?month=YYYY-MM
 export async function GET(request: NextRequest) {
@@ -15,18 +16,19 @@ export async function GET(request: NextRequest) {
   const month = searchParams.get("month") ?? vnMonthString();
   if (!/^\d{4}-\d{2}$/.test(month)) return fail("month phải có dạng YYYY-MM", 400);
 
-  const users = await prismaSession.user.findMany({
-    where: { isActive: true, deletedAt: null },
-    select: {
-      id: true, fullName: true, username: true, department: true,
-      allowedOffDaysPerMonth: true, workStartTime: true, workEndTime: true,
-    },
-  });
+  const payload = await withTtlCache(`admin:overtime:${month}`, 30_000, async () => {
+    const users = await prismaSession.user.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: {
+        id: true, fullName: true, username: true, department: true,
+        allowedOffDaysPerMonth: true, workStartTime: true, workEndTime: true,
+      },
+    });
 
-  const attendance = await prisma.attendanceDay.findMany({
-    where: { workDate: { gte: `${month}-01`, lte: `${month}-31` } },
-    select: { userId: true, workedMinutes: true, isOffDay: true, isDeducted: true, status: true },
-  });
+    const attendance = await prisma.attendanceDay.findMany({
+      where: { workDate: { gte: `${month}-01`, lte: `${month}-31` } },
+      select: { userId: true, workedMinutes: true, isOffDay: true, isDeducted: true, status: true },
+    });
 
   const byUser = new Map<string, { workedDays: number; totalMinutes: number; offDaysPaid: number; offDaysDeducted: number; overtimeMinutes: number }>();
   const userMap = new Map(users.map((u) => [u.id, u]));
@@ -59,29 +61,30 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const results = users
-    .map((u) => {
-      const s = byUser.get(u.id);
-      if (!s) return null;
-      const excessOffDays = Math.max(0, (s.offDaysPaid + s.offDaysDeducted) - u.allowedOffDaysPerMonth);
-      return {
-        userId: u.id,
-        fullName: u.fullName,
-        username: u.username,
-        department: u.department ?? "",
-        workedDays: s.workedDays,
-        totalWorkedHours: Math.round(s.totalMinutes / 60 * 10) / 10,
-        overtimeHours: Math.round(s.overtimeMinutes / 60 * 10) / 10,
-        offDaysPaid: s.offDaysPaid,
-        offDaysDeducted: s.offDaysDeducted,
-        allowedOff: u.allowedOffDaysPerMonth,
-        excessOffDays,
-        hasOvertime: s.overtimeMinutes > 0,
-        hasExcessOff: excessOffDays > 0,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => (b!.overtimeHours - a!.overtimeHours));
+    return users
+      .map((u) => {
+        const s = byUser.get(u.id);
+        if (!s) return null;
+        const excessOffDays = Math.max(0, (s.offDaysPaid + s.offDaysDeducted) - u.allowedOffDaysPerMonth);
+        return {
+          userId: u.id,
+          fullName: u.fullName,
+          username: u.username,
+          department: u.department ?? "",
+          workedDays: s.workedDays,
+          totalWorkedHours: Math.round((s.totalMinutes / 60) * 10) / 10,
+          overtimeHours: Math.round((s.overtimeMinutes / 60) * 10) / 10,
+          offDaysPaid: s.offDaysPaid,
+          offDaysDeducted: s.offDaysDeducted,
+          allowedOff: u.allowedOffDaysPerMonth,
+          excessOffDays,
+          hasOvertime: s.overtimeMinutes > 0,
+          hasExcessOff: excessOffDays > 0,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => (b!.overtimeHours - a!.overtimeHours));
+  });
 
-  return ok(results);
+  return ok(payload);
 }

@@ -33,9 +33,28 @@ export async function GET(request: NextRequest) {
     where.checkOutAt = null;
   }
 
-  const [allItems, users] = await Promise.all([
+  const users = await prismaSession.user.findMany({
+    where: {
+      deletedAt: null,
+      ...(userId ? { id: userId } : {}),
+      ...(department ? { department } : {}),
+    },
+    select: { id: true, fullName: true, username: true, department: true },
+  });
+
+  const relevantUserIds = users.map((u) => u.id);
+  if (relevantUserIds.length === 0) {
+    return ok({ items: [], total: 0, page, pageSize: take, totalPages: 0 });
+  }
+
+  const businessWhere = {
+    ...where,
+    userId: userId ?? { in: relevantUserIds },
+  } as Record<string, unknown>;
+
+  const [itemsRaw, total] = await Promise.all([
     prisma.attendanceDay.findMany({
-      where,
+      where: businessWhere,
       select: {
         id: true,
         userId: true,
@@ -61,20 +80,14 @@ export async function GET(request: NextRequest) {
         },
       },
       orderBy: [{ workDate: "desc" }, { createdAt: "desc" }],
+      skip: (page - 1) * take,
+      take,
     }),
-    prismaSession.user.findMany({
-      where: { deletedAt: null },
-      select: { id: true, fullName: true, username: true, department: true },
-    }),
+    prisma.attendanceDay.count({ where: businessWhere }),
   ]);
 
   const userMap = new Map(users.map((u) => [u.id, u]));
-  const filteredItems = allItems
-    .map((item) => ({ ...item, user: userMap.get(item.userId) ?? null }))
-    .filter((item) => item.user && (!department || item.user.department === department));
-
-  const total = filteredItems.length;
-  const items = filteredItems.slice((page - 1) * take, (page - 1) * take + take);
+  const items = itemsRaw.map((item) => ({ ...item, user: userMap.get(item.userId) ?? null })).filter((item) => item.user);
 
   return ok({ items, total, page, pageSize: take, totalPages: Math.ceil(total / take) });
 }

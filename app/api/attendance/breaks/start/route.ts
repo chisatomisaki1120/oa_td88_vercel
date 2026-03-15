@@ -9,6 +9,7 @@ import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const schema = z.object({
   breakType: z.nativeEnum(BreakType).default(BreakType.OTHER),
@@ -56,5 +57,6 @@ export async function POST(request: NextRequest) {
   if (result === "ALREADY_CHECKOUT") return fail("Bạn đã check-out", 409);
   if (result === "BREAK_OPEN") return fail("Bạn đã bắt đầu nghỉ trước đó", 409);
 
+  invalidateBusinessReadCaches();
   return ok(result);
 }

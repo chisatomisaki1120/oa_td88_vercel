@@ -8,6 +8,7 @@ import { validateCsrf } from "@/lib/csrf";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 const createSchema = z.object({
   dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(15),
@@ -117,5 +118,6 @@ export async function POST(request: NextRequest) {
     return created;
   });
 
+  invalidateBusinessReadCaches();
   return ok({ id: leaveRequest.id, dates: uniqueDates, status: leaveRequest.status });
 }

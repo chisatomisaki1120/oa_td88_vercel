@@ -6,6 +6,7 @@ import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { vnDateString, vnMonthString } from "@/lib/time";
 import { parseWarnings } from "@/lib/attendance";
+import { withTtlCache } from "@/lib/ttl-cache";
 
 export async function GET(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
@@ -14,8 +15,9 @@ export async function GET(request: NextRequest) {
   const today = vnDateString();
   const month = vnMonthString();
 
-  // Parallel queries for today's stats, monthly stats, and employee list
-  const [allEmployees, todayAttendance, monthAttendance] = await Promise.all([
+  const payload = await withTtlCache(`admin:dashboard:${month}:${today}`, 15_000, async () => {
+    // Parallel queries for today's stats, monthly stats, and employee list
+    const [allEmployees, todayAttendance, monthAttendance] = await Promise.all([
     prismaSession.user.findMany({
       where: { role: "EMPLOYEE", isActive: true, deletedAt: null },
       select: { id: true, fullName: true, username: true },
@@ -104,15 +106,18 @@ export async function GET(request: NextRequest) {
   const topAbsent = empArr.filter((e) => e.absent > 0).sort((a, b) => b.absent - a.absent).slice(0, 10);
   const topWarnings = empArr.filter((e) => e.warnings > 0).sort((a, b) => b.warnings - a.warnings).slice(0, 10);
 
-  return ok({
-    today: {
-      date: today,
-      totalEmployees,
-      present: presentList.length, late: lateList.length, absent: absentList.length,
-      off: offList.length, incomplete: incompleteList.length, notCheckedIn: notCheckedInList.length,
-      presentList, lateList, absentList, offList, incompleteList, notCheckedInList,
-    },
-    month: { month, dailyChart },
-    rankings: { topLate, topAbsent, topWarnings },
+    return {
+      today: {
+        date: today,
+        totalEmployees,
+        present: presentList.length, late: lateList.length, absent: absentList.length,
+        off: offList.length, incomplete: incompleteList.length, notCheckedIn: notCheckedInList.length,
+        presentList, lateList, absentList, offList, incompleteList, notCheckedInList,
+      },
+      month: { month, dailyChart },
+      rankings: { topLate, topAbsent, topWarnings },
+    };
   });
+
+  return ok(payload);
 }

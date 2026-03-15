@@ -6,6 +6,7 @@ import { prismaSession } from "@/lib/prisma-session";
 import { requireRoleRequest } from "@/lib/rbac";
 import { parseWarnings } from "@/lib/attendance";
 import { parseHHMM } from "@/lib/time";
+import { withTtlCache } from "@/lib/ttl-cache";
 
 export async function GET(request: NextRequest) {
   const actor = await requireRoleRequest(request, [Role.ADMIN, Role.SUPER_ADMIN]);
@@ -15,22 +16,23 @@ export async function GET(request: NextRequest) {
   const month = searchParams.get("month");
   if (!month || !/^\d{4}-\d{2}$/.test(month)) return fail("month phải có dạng YYYY-MM", 400);
 
-  const rows = await prisma.attendanceDay.findMany({
-    where: { workDate: { gte: `${month}-01`, lte: `${month}-31` } },
-    orderBy: [{ userId: "asc" }, { workDate: "asc" }],
-  });
+  const payload = await withTtlCache(`admin:payroll:${month}`, 30_000, async () => {
+    const rows = await prisma.attendanceDay.findMany({
+      where: { workDate: { gte: `${month}-01`, lte: `${month}-31` } },
+      orderBy: [{ userId: "asc" }, { workDate: "asc" }],
+    });
 
-  const userIds = [...new Set(rows.map((row) => row.userId))];
-  const users = userIds.length
-    ? await prismaSession.user.findMany({
-        where: { id: { in: userIds }, deletedAt: null },
-        select: {
-          id: true, username: true, fullName: true, department: true,
-          allowedOffDaysPerMonth: true, workStartTime: true, workEndTime: true,
-        },
-      })
-    : [];
-  const userMap = new Map(users.map((u) => [u.id, u]));
+    const userIds = [...new Set(rows.map((row) => row.userId))];
+    const users = userIds.length
+      ? await prismaSession.user.findMany({
+          where: { id: { in: userIds }, deletedAt: null },
+          select: {
+            id: true, username: true, fullName: true, department: true,
+            allowedOffDaysPerMonth: true, workStartTime: true, workEndTime: true,
+          },
+        })
+      : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
 
   type Summary = {
     userId: string;
@@ -93,11 +95,12 @@ export async function GET(request: NextRequest) {
     if (parseWarnings(row.warningFlagsJson).length > 0) s.warningDays++;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const summaries = [...byUser.values()].map(({ _scheduledMin, ...s }) => ({
-    ...s,
-    remainingOff: Math.max(0, s.allowedOff - s.offDaysPaid),
-  }));
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    return [...byUser.values()].map(({ _scheduledMin, ...s }) => ({
+      ...s,
+      remainingOff: Math.max(0, s.allowedOff - s.offDaysPaid),
+    }));
+  });
 
-  return ok(summaries);
+  return ok(payload);
 }

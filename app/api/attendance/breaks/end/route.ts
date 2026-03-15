@@ -8,6 +8,7 @@ import { minutesBetween } from "@/lib/time";
 import { consumeApiRateLimit } from "@/lib/rate-limit";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
+import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
 
 export async function POST(request: NextRequest) {
   if (!validateCsrf(request)) return fail("Invalid CSRF token", 403);
@@ -57,5 +58,6 @@ export async function POST(request: NextRequest) {
   if (result === "NO_OPEN_BREAK") return fail("Không có phiên nghỉ đang mở", 409);
   if (result === "ATTENDANCE_NOT_FOUND") return fail("Không tìm thấy bản ghi công", 404);
 
+  invalidateBusinessReadCaches();
   return ok(result);
 }
