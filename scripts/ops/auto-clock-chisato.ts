@@ -7,6 +7,12 @@ runAutoClockChisato()
       console.log(`[auto-clock] ${result.reason}`);
       return;
     }
-    console.log(`[auto-clock] ${result.action} -> ${result.recordId} at ${result.at}`);
+
+    if ("action" in result) {
+      console.log(`[auto-clock] ${result.action} -> ${result.recordId} at ${result.at}`);
+      return;
+    }
+
+    console.log("[auto-clock] Completed with no action details.");
   })
   .catch((err) => console.error("[auto-clock] Error:", err));
