@@ -120,6 +120,38 @@ export default function AdminAttendance() {
     }
   }
 
+  async function markOffToday(row: Row) {
+    if (row.workDate !== currentDateVn()) {
+      setError("Chỉ hỗ trợ đánh dấu OFF cho ngày hôm nay");
+      return;
+    }
+
+    const reasonInput = window.prompt("Lý do OFF (có thể để trống):", row.offReason ?? "Admin đánh dấu OFF hôm nay");
+    if (reasonInput === null) return;
+
+    setLoading(true);
+    setError("");
+    setMessage("");
+    try {
+      await apiJson(`/api/admin/attendance/${row.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          markOffToday: true,
+          offReason: reasonInput.trim() || null,
+        }),
+      });
+      setEditingId("");
+      setCheckInAt("");
+      setCheckOutAt("");
+      await load();
+      setMessage(`Đã đánh dấu OFF hôm nay cho ${row.user.username}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Đánh dấu OFF thất bại");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function startEdit(row: Row) {
     setEditingId(row.id);
     setCheckInAt(row.checkInAt ? new Date(row.checkInAt).toISOString().slice(0, 16) : "");
@@ -196,6 +228,8 @@ export default function AdminAttendance() {
                 checkOutAt={checkOutAt}
                 onCheckInChange={setCheckInAt}
                 onCheckOutChange={setCheckOutAt}
+                canMarkOffToday={row.workDate === currentDateVn() && !row.isOffDay}
+                onMarkOffToday={() => markOffToday(row)}
               />
             ))}
             {rows.length === 0 && <EmptyState />}
@@ -232,6 +266,8 @@ function RowGroup({
   checkOutAt,
   onCheckInChange,
   onCheckOutChange,
+  canMarkOffToday,
+  onMarkOffToday,
 }: {
   row: Row;
   expanded: boolean;
@@ -245,6 +281,8 @@ function RowGroup({
   checkOutAt: string;
   onCheckInChange: (v: string) => void;
   onCheckOutChange: (v: string) => void;
+  canMarkOffToday: boolean;
+  onMarkOffToday: () => void;
 }) {
   return (
     <>
@@ -318,6 +356,19 @@ function RowGroup({
               ) : (
                 <div>
                   <button className="secondary" style={{ fontSize: 12, padding: "4px 12px" }} onClick={(e) => { e.stopPropagation(); onEdit(); }}>Sửa giờ</button>
+                  {canMarkOffToday && (
+                    <button
+                      className="secondary"
+                      style={{ fontSize: 12, padding: "4px 12px", marginLeft: 8 }}
+                      disabled={saving}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onMarkOffToday();
+                      }}
+                    >
+                      Đánh dấu OFF hôm nay
+                    </button>
+                  )}
                 </div>
               )}
             </div>

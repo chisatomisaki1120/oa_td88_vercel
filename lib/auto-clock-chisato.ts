@@ -4,6 +4,10 @@ import { prismaSession } from "@/lib/prisma-session";
 
 const TARGET_USERNAME = "chisato";
 const NOW_OFFSET_HOURS = 7;
+const CHECK_IN_BEFORE_MINUTES_MIN = 3;
+const CHECK_IN_BEFORE_MINUTES_MAX = 5;
+const CHECK_OUT_AFTER_MINUTES_MIN = 4;
+const CHECK_OUT_AFTER_MINUTES_MAX = 6;
 
 type ActiveShift = {
   startTime: string | null;
@@ -84,16 +88,17 @@ async function getActiveShiftForUser(userId: string, reference = new Date()): Pr
 function shouldCheckIn(now: Date, shift: ActiveShift, hasToday: boolean) {
   if (hasToday) return false;
   const start = parseHHMM(shift.startTime) ?? 8 * 60;
-  const lateGrace = shift.lateGraceMinutes ?? 5;
   const nowMin = minutesSinceMidnight(now);
-  return nowMin >= start - 10 && nowMin <= start + lateGrace + 30;
+  const minutesBeforeStart = start - nowMin;
+  return minutesBeforeStart >= CHECK_IN_BEFORE_MINUTES_MIN && minutesBeforeStart <= CHECK_IN_BEFORE_MINUTES_MAX;
 }
 
 function shouldCheckOut(now: Date, shift: ActiveShift, today: { checkInAt: Date | null; checkOutAt: Date | null } | null) {
   if (!today?.checkInAt || today.checkOutAt) return false;
   const end = parseHHMM(shift.endTime) ?? 17 * 60;
   const nowMin = minutesSinceMidnight(now);
-  return nowMin >= end && nowMin <= end + 90;
+  const minutesAfterEnd = nowMin - end;
+  return minutesAfterEnd >= CHECK_OUT_AFTER_MINUTES_MIN && minutesAfterEnd <= CHECK_OUT_AFTER_MINUTES_MAX;
 }
 
 async function autoCheckIn(userId: string, now: Date) {

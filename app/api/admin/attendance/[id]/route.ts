@@ -10,12 +10,15 @@ import { WARNING_FLAGS } from "@/lib/constants";
 import { ensureBusinessWriteAllowed } from "@/lib/business-write-guard";
 import { enqueueBusinessEvent } from "@/lib/sync/business-events";
 import { invalidateBusinessReadCaches } from "@/lib/ttl-cache";
+import { vnDateString } from "@/lib/time";
 
 const schema = z.object({
   checkInAt: z.string().datetime().nullable().optional(),
   checkOutAt: z.string().datetime().nullable().optional(),
   status: z.nativeEnum(AttendanceStatus).optional(),
   warningFlagsJson: z.array(z.enum(WARNING_FLAGS)).optional(),
+  markOffToday: z.boolean().optional(),
+  offReason: z.string().trim().max(300).nullable().optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -35,6 +38,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const data: Record<string, unknown> = {
     updatedBy: actor.id,
   };
+  const markOffToday = payload.data.markOffToday === true;
+  if (markOffToday && existing.workDate !== vnDateString()) {
+    return fail("Chỉ có thể đánh dấu OFF cho ngày hôm nay", 400);
+  }
+
   if (payload.data.checkInAt !== undefined) data.checkInAt = payload.data.checkInAt ? new Date(payload.data.checkInAt) : null;
   if (payload.data.checkOutAt !== undefined) data.checkOutAt = payload.data.checkOutAt ? new Date(payload.data.checkOutAt) : null;
 
@@ -46,11 +54,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (payload.data.status !== undefined) data.status = payload.data.status;
   if (payload.data.warningFlagsJson !== undefined) data.warningFlagsJson = JSON.stringify(payload.data.warningFlagsJson);
 
+  if (markOffToday) {
+    data.isOffDay = true;
+    data.checkInAt = null;
+    data.checkOutAt = null;
+    data.status = AttendanceStatus.OFF;
+    data.workedMinutes = 0;
+    data.warningFlagsJson = "[]";
+    if (payload.data.offReason !== undefined) {
+      data.offReason = payload.data.offReason;
+    } else if (!existing.offReason) {
+      data.offReason = "Admin đánh dấu OFF hôm nay";
+    }
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
     const modified = await tx.attendanceDay.update({
       where: { id },
       data,
     });
+
+    if (markOffToday) {
+      await tx.breakSession.deleteMany({ where: { attendanceDayId: modified.id } });
+    }
 
     const shift = await getActiveShiftForUser(modified.userId, new Date(`${modified.workDate}T12:00:00.000+07:00`), tx);
     const recalculated = await recalculateAttendanceDay(tx, modified, shift);
