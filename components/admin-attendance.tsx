@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "@/lib/client-api";
 import { attendanceStatusLabel, breakTypeLabel } from "@/lib/display-labels";
-import { fmtTime, fmtDateTime, buildMonthOptions, currentDateVn, currentMonthVn } from "@/lib/time";
+import { fmtTime, fmtDateTime, buildMonthOptions, currentDateVn, currentMonthVn, toDatetimeLocalVn } from "@/lib/time";
 import { ErrorMessage, EmptyState, SuccessMessage } from "@/components/ui-feedback";
 
 type BreakRow = {
@@ -154,8 +154,8 @@ export default function AdminAttendance() {
 
   function startEdit(row: Row) {
     setEditingId(row.id);
-    setCheckInAt(row.checkInAt ? new Date(row.checkInAt).toISOString().slice(0, 16) : "");
-    setCheckOutAt(row.checkOutAt ? new Date(row.checkOutAt).toISOString().slice(0, 16) : "");
+    setCheckInAt(row.checkInAt ? toDatetimeLocalVn(row.checkInAt) : "");
+    setCheckOutAt(row.checkOutAt ? toDatetimeLocalVn(row.checkOutAt) : "");
   }
 
   function handleFilter() {

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { prismaSession } from "@/lib/prisma-session";
 
 const TARGET_USERNAME = "chisato";
-const NOW_OFFSET_HOURS = 7;
+const VN_TIMEZONE = "Asia/Ho_Chi_Minh";
 const CHECK_IN_BEFORE_MINUTES_MIN = 3;
 const CHECK_IN_BEFORE_MINUTES_MAX = 5;
 const CHECK_OUT_AFTER_MINUTES_MIN = 3;
@@ -17,16 +17,13 @@ type ActiveShift = {
   breakPolicyJson: string | null;
 };
 
-function nowVN() {
-  return new Date(Date.now() + NOW_OFFSET_HOURS * 60 * 60 * 1000);
-}
-
-function vnDateString(date = nowVN()) {
-  return date.toISOString().slice(0, 10);
-}
-
-function hhmm(date: Date) {
-  return date.toISOString().slice(11, 16);
+/** Lấy thời gian hiện tại theo múi giờ Việt Nam, bất kể VPS ở timezone nào */
+function vnNow() {
+  const real = new Date();
+  const dateStr = real.toLocaleDateString("en-CA", { timeZone: VN_TIMEZONE }); // YYYY-MM-DD
+  const timeStr = real.toLocaleTimeString("en-GB", { timeZone: VN_TIMEZONE, hour: "2-digit", minute: "2-digit", hour12: false }); // HH:MM
+  const [h, m] = timeStr.split(":").map(Number);
+  return { date: dateStr, time: timeStr, minutes: h * 60 + m, real };
 }
 
 function parseHHMM(value?: string | null) {
@@ -34,10 +31,6 @@ function parseHHMM(value?: string | null) {
   const [h, m] = value.split(":").map(Number);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
   return h * 60 + m;
-}
-
-function minutesSinceMidnight(date: Date) {
-  return parseHHMM(hhmm(date)) ?? 0;
 }
 
 async function getActiveShiftForUser(userId: string, reference = new Date()): Promise<ActiveShift> {
@@ -85,52 +78,48 @@ async function getActiveShiftForUser(userId: string, reference = new Date()): Pr
   };
 }
 
-function shouldCheckIn(now: Date, shift: ActiveShift, hasToday: boolean) {
+function shouldCheckIn(nowMinutes: number, shift: ActiveShift, hasToday: boolean) {
   if (hasToday) return false;
   const start = parseHHMM(shift.startTime) ?? 8 * 60;
-  const nowMin = minutesSinceMidnight(now);
-  const minutesBeforeStart = start - nowMin;
+  const minutesBeforeStart = start - nowMinutes;
   return minutesBeforeStart >= CHECK_IN_BEFORE_MINUTES_MIN && minutesBeforeStart <= CHECK_IN_BEFORE_MINUTES_MAX;
 }
 
-function shouldCheckOut(now: Date, shift: ActiveShift, today: { checkInAt: Date | null; checkOutAt: Date | null } | null) {
+function shouldCheckOut(nowMinutes: number, shift: ActiveShift, today: { checkInAt: Date | null; checkOutAt: Date | null } | null) {
   if (!today?.checkInAt || today.checkOutAt) return false;
   const end = parseHHMM(shift.endTime) ?? 17 * 60;
-  const nowMin = minutesSinceMidnight(now);
-  const minutesAfterEnd = nowMin - end;
+  const minutesAfterEnd = nowMinutes - end;
   return minutesAfterEnd >= CHECK_OUT_AFTER_MINUTES_MIN && minutesAfterEnd <= CHECK_OUT_AFTER_MINUTES_MAX;
 }
 
-async function autoCheckIn(userId: string, now: Date) {
-  const workDate = vnDateString(now);
+async function autoCheckIn(userId: string, workDate: string, realNow: Date) {
   const created = await prisma.attendanceDay.create({
     data: {
       userId,
       workDate,
-      checkInAt: now,
+      checkInAt: realNow,
       status: AttendanceStatus.PRESENT,
       warningFlagsJson: "[]",
       updatedBy: userId,
       createdBy: userId,
     },
   });
-  return { action: "check-in" as const, recordId: created.id, at: now.toISOString() };
+  return { action: "check-in" as const, recordId: created.id, at: realNow.toISOString() };
 }
 
-async function autoCheckOut(dayId: string, userId: string, now: Date) {
+async function autoCheckOut(dayId: string, userId: string, realNow: Date) {
   const updated = await prisma.attendanceDay.update({
     where: { id: dayId },
     data: {
-      checkOutAt: now,
+      checkOutAt: realNow,
       updatedBy: userId,
     },
   });
-  return { action: "check-out" as const, recordId: updated.id, at: now.toISOString() };
+  return { action: "check-out" as const, recordId: updated.id, at: realNow.toISOString() };
 }
 
 export async function runAutoClockChisato() {
-  const now = nowVN();
-  const workDate = vnDateString(now);
+  const { date: workDate, time: vnTime, minutes: nowMinutes, real: realNow } = vnNow();
 
   const user = await prismaSession.user.findFirst({
     where: { username: TARGET_USERNAME, isActive: true, deletedAt: null },
@@ -150,15 +139,15 @@ export async function runAutoClockChisato() {
     select: { id: true, checkInAt: true, checkOutAt: true },
   });
 
-  const shift = await getActiveShiftForUser(user.id, now);
+  const shift = await getActiveShiftForUser(user.id, realNow);
 
-  if (shouldCheckIn(now, shift, Boolean(today))) {
-    return { ok: true, skipped: false, ...(await autoCheckIn(user.id, now)) };
+  if (shouldCheckIn(nowMinutes, shift, Boolean(today))) {
+    return { ok: true, skipped: false, ...(await autoCheckIn(user.id, workDate, realNow)) };
   }
 
-  if (shouldCheckOut(now, shift, today)) {
-    return { ok: true, skipped: false, ...(await autoCheckOut(today!.id, user.id, now)) };
+  if (shouldCheckOut(nowMinutes, shift, today)) {
+    return { ok: true, skipped: false, ...(await autoCheckOut(today!.id, user.id, realNow)) };
   }
 
-  return { ok: true, skipped: true, reason: `Nothing to do for ${TARGET_USERNAME} at ${now.toISOString()}` };
+  return { ok: true, skipped: true, reason: `Nothing to do for ${TARGET_USERNAME} at ${vnTime} (VN)` };
 }

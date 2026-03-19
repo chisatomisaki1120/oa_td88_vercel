@@ -134,3 +134,9 @@ export function currentMonthVn(): string {
 export function currentDateVn(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: VN_TIMEZONE });
 }
+
+/** Convert a Date/ISO string to "YYYY-MM-DDTHH:mm" in VN timezone for datetime-local inputs */
+export function toDatetimeLocalVn(value: string | Date): string {
+  const p = toParts(new Date(value));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
